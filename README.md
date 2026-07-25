@@ -16,6 +16,10 @@ Grab a build from the [Releases](../../releases) page:
   `xattr -dr com.apple.quarantine neon_asteroids`.
 - **Windows** (`neon-asteroids-windows.zip`) — 64-bit.
   SmartScreen may warn on first run: **More info → Run anyway**.
+- **Linux** (`neon-asteroids-linux.zip`) — x86-64. Mark it executable
+  (`chmod +x neon_asteroids`) and run it. Needs an X11/OpenGL desktop and ALSA;
+  if it complains about missing libraries, install your distro's equivalents of
+  `libasound2`, `libx11`, `libgl1`.
 
 Keep the `shaders/` folder next to the executable.
 

@@ -18,9 +18,21 @@ jobs:
         include:
           - { os: macos-latest,   name: macos   }
           - { os: windows-latest, name: windows }
+          - { os: ubuntu-latest,  name: linux   }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      # raylib needs X11, OpenGL, ALSA and udev headers on Linux; the runner
+      # ships none of them by default.
+      - name: Install Linux dependencies
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libx11-dev libxrandr-dev libxi-dev \
+            libgl1-mesa-dev libglu1-mesa-dev libxcursor-dev libxinerama-dev \
+            libxext-dev libudev-dev libwayland-dev libxkbcommon-dev wayland-protocols
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -46,6 +58,14 @@ jobs:
           Copy-Item build/Release/neon_asteroids.exe pkg/neon-asteroids/
           Copy-Item -Recurse shaders pkg/neon-asteroids/
           Compress-Archive -Path pkg/neon-asteroids -DestinationPath neon-asteroids-windows.zip
+
+      - name: Package (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          mkdir -p pkg/neon-asteroids
+          cp build/neon_asteroids pkg/neon-asteroids/
+          cp -R shaders pkg/neon-asteroids/
+          cd pkg && zip -r ../neon-asteroids-linux.zip neon-asteroids
 
       - uses: actions/upload-artifact@v4
         with:
