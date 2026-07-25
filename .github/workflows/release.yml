@@ -1,0 +1,66 @@
+name: release
+
+# Build native binaries on real macOS and Windows machines and attach both to a
+# GitHub Release. Triggered by pushing a version tag, e.g. `git tag v1.0.0 &&
+# git push origin v1.0.0`.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # the release job needs to create a Release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,   name: macos   }
+          - { os: windows-latest, name: windows }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      # raylib is built from source via FetchContent, so this first build is a
+      # few minutes on each runner.
+      - name: Build
+        run: cmake --build build --config Release -j 4
+
+      - name: Package (macOS)
+        if: matrix.name == 'macos'
+        run: |
+          mkdir -p pkg/neon-asteroids
+          cp build/neon_asteroids pkg/neon-asteroids/
+          cp -R shaders pkg/neon-asteroids/
+          cd pkg && zip -r ../neon-asteroids-macos.zip neon-asteroids
+
+      - name: Package (Windows)
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pkg/neon-asteroids | Out-Null
+          Copy-Item build/Release/neon_asteroids.exe pkg/neon-asteroids/
+          Copy-Item -Recurse shaders pkg/neon-asteroids/
+          Compress-Archive -Path pkg/neon-asteroids -DestinationPath neon-asteroids-windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: neon-asteroids-*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*.zip
+          generate_release_notes: true

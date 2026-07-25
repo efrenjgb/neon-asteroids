@@ -1,0 +1,14 @@
+# Build output
+/build/
+/dist/
+/pkg/
+
+# Dev convenience (generated)
+/compile_commands.json
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# clangd cache
+/.cache/
