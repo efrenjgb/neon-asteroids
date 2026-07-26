@@ -26,6 +26,17 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(raylib)
 
+# ENet: UDP transport for networked play. Small portable C library; its own
+# CMake links winmm/ws2_32 on Windows. The `enet` target it defines uses the
+# directory-scoped include path, so consumers add ${enet_SOURCE_DIR}/include.
+FetchContent_Declare(
+    enet
+    GIT_REPOSITORY https://github.com/lsalzman/enet.git
+    GIT_TAG        v1.3.18
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(enet)
+
 add_executable(neon_asteroids
     src/main.cpp
     src/game.cpp
@@ -55,6 +66,12 @@ target_include_directories(gamepad_probe PRIVATE
 # Vector2 struct definition; opens no window and runs in CI.
 add_executable(net_selftest tools/net_selftest.cpp)
 target_link_libraries(net_selftest PRIVATE raylib)
+
+# Localhost connect proof for the NetLink layer. Two processes (host + client)
+# exchange messages over loopback. No window.
+add_executable(net_conntest tools/net_conntest.cpp src/net.cpp)
+target_link_libraries(net_conntest PRIVATE enet raylib)
+target_include_directories(net_conntest PRIVATE ${enet_SOURCE_DIR}/include)
 
 if(APPLE)
     target_link_libraries(neon_asteroids PRIVATE
