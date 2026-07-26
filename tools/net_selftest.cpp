@@ -97,6 +97,103 @@ int main()
         check(out.seed == in.seed, "StartGameMsg seed");
     }
 
+    // --- Snapshot round-trip: a populated world must survive intact ---
+    {
+        Snapshot snap;
+        snap.tick      = 4242;
+        snap.gameState = 1;
+        snap.wave      = 9;
+        snap.shake     = 0.42f;
+
+        Ship s0;
+        s0.player = 0; s0.lives = 3;
+        s0.alive = true; s0.thrusting = true; s0.shield = true; s0.fanFire = true;
+        s0.pos = {640.0f, 360.0f}; s0.vel = {-12.5f, 33.0f};
+        s0.rot = 1.2345f; s0.invuln = 0.75f;
+        snap.ships.push_back(s0);
+
+        Ship s1;
+        s1.player = 1; s1.lives = 1;
+        s1.alive = true; s1.warping = true;
+        s1.pos = {100.0f, 200.0f};
+        s1.warp = 0.3f; s1.warpDuration = 0.55f; s1.warpPortal = {800.0f, 150.0f};
+        snap.ships.push_back(s1);
+
+        Asteroid a;
+        a.pos = {12.0f, 34.0f}; a.rot = 0.5f; a.radius = 58.0f; a.tier = 3;
+        a.shape = {0.9f, 1.1f, 0.8f, 1.25f, 1.0f, 0.72f, 1.18f, 0.95f, 1.05f};
+        snap.asteroids.push_back(a);
+
+        Bullet b0; b0.pos = {1.0f, 2.0f}; b0.vel = {700.0f, 0.0f}; b0.owner = 1;
+        Bullet b1; b1.pos = {3.0f, 4.0f}; b1.vel = {0.0f, -380.0f}; b1.owner = kUfoBulletOwner;
+        snap.bullets.push_back(b0);
+        snap.bullets.push_back(b1);
+
+        Ufo u; u.pos = {500.0f, 90.0f}; u.radius = 14.0f; u.tier = 1;
+        snap.ufos.push_back(u);
+
+        Powerup p; p.pos = {250.0f, 250.0f}; p.type = PowerupType::Shield;
+        p.radius = 16.0f; p.spin = 2.1f; p.life = 7.5f;
+        snap.powerups.push_back(p);
+
+        snap.events.push_back({EventType::Explosion, {12.0f, 34.0f}, 3});
+        snap.events.push_back({EventType::Powerup,  {250.0f, 250.0f}, static_cast<uint8_t>(PowerupType::Shield)});
+
+        ByteWriter w;
+        snap.write(w);
+
+        ByteReader r(w.buf.data(), w.buf.size());
+        check(static_cast<MsgType>(r.u8()) == MsgType::Snapshot, "Snapshot type tag");
+        const Snapshot out = Snapshot::read(r);
+
+        check(r.ok, "Snapshot consumed cleanly");
+        check(out.tick == snap.tick && out.gameState == snap.gameState
+              && out.wave == snap.wave && bitEqual(out.shake, snap.shake), "Snapshot header");
+
+        check(out.ships.size() == 2, "Snapshot ship count");
+        check(out.ships[0].player == 0 && out.ships[0].lives == 3
+              && out.ships[0].alive && out.ships[0].thrusting
+              && out.ships[0].shield && out.ships[0].fanFire
+              && bitEqual(out.ships[0].pos.x, 640.0f) && bitEqual(out.ships[0].vel.y, 33.0f)
+              && bitEqual(out.ships[0].rot, 1.2345f) && bitEqual(out.ships[0].invuln, 0.75f),
+              "Snapshot ship 0 fields+flags");
+        check(out.ships[1].warping && bitEqual(out.ships[1].warp, 0.3f)
+              && bitEqual(out.ships[1].warpDuration, 0.55f)
+              && bitEqual(out.ships[1].warpPortal.x, 800.0f), "Snapshot ship 1 warp state");
+
+        check(out.asteroids.size() == 1 && out.asteroids[0].tier == 3
+              && out.asteroids[0].shape.size() == 9
+              && bitEqual(out.asteroids[0].shape[3], 1.25f)
+              && bitEqual(out.asteroids[0].radius, 58.0f), "Snapshot asteroid + shape");
+
+        check(out.bullets.size() == 2 && out.bullets[0].owner == 1
+              && out.bullets[1].owner == kUfoBulletOwner, "Snapshot bullet owners (incl -1)");
+
+        check(out.ufos.size() == 1 && out.ufos[0].tier == 1
+              && bitEqual(out.ufos[0].radius, 14.0f), "Snapshot ufo");
+
+        check(out.powerups.size() == 1 && out.powerups[0].type == PowerupType::Shield
+              && bitEqual(out.powerups[0].spin, 2.1f) && bitEqual(out.powerups[0].life, 7.5f),
+              "Snapshot powerup");
+
+        check(out.events.size() == 2 && out.events[0].type == EventType::Explosion
+              && out.events[0].param == 3
+              && out.events[1].type == EventType::Powerup, "Snapshot events");
+    }
+
+    // --- empty snapshot (start of a wave transition, nothing on screen) ---
+    {
+        Snapshot snap;
+        snap.tick = 1;
+        ByteWriter w;
+        snap.write(w);
+        ByteReader r(w.buf.data(), w.buf.size());
+        r.u8();
+        const Snapshot out = Snapshot::read(r);
+        check(r.ok && out.ships.empty() && out.asteroids.empty()
+              && out.events.empty(), "empty Snapshot round-trips");
+    }
+
     // --- truncated buffer is detected, not read past ---
     {
         ByteReader r(nullptr, 0);

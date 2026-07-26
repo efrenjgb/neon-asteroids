@@ -24,6 +24,62 @@ const char* StateName(net::LinkState s)
         default:                         return "Disconnected";
     }
 }
+
+// A worst-case-ish snapshot: a full late wave of 11 large asteroids (each with
+// its polygon shape), two ships, bullets, a saucer, a powerup and events. This
+// is the real payload Phase 1 must push every tick, so sending it over the
+// socket proves the size is handled — a snapshot larger than the UDP MTU would
+// be dropped on the unreliable channel unless fragmentation is arranged.
+net::Snapshot MakeSampleSnapshot(int tick)
+{
+    net::Snapshot s;
+    s.tick = static_cast<uint32_t>(tick);
+    s.wave = 11;
+
+    for (int i = 0; i < 2; i++)
+    {
+        Ship sh;
+        sh.player = i;
+        sh.lives  = 3;
+        sh.alive  = true;
+        sh.pos    = {100.0f + i * 200.0f, 360.0f};
+        s.ships.push_back(sh);
+    }
+
+    // 40 asteroids deliberately overshoots a busy wave, pushing the payload
+    // past the MTU so the fragmentation path is actually exercised over the
+    // socket rather than just assumed.
+    for (int i = 0; i < 40; i++)
+    {
+        Asteroid a;
+        a.pos    = {static_cast<float>(i * 30), 200.0f};
+        a.rot    = 0.1f * i;
+        a.radius = 18.0f;
+        a.tier   = 1;
+        a.shape.assign(13, 1.0f);   // max vertex count
+        s.asteroids.push_back(a);
+    }
+
+    for (int i = 0; i < 6; i++)
+    {
+        Bullet b;
+        b.pos   = {static_cast<float>(i * 50), 300.0f};
+        b.vel   = {700.0f, 0.0f};
+        b.owner = i % 2;
+        s.bullets.push_back(b);
+    }
+
+    Ufo u; u.pos = {500.0f, 90.0f}; u.radius = 22.0f; u.tier = 2;
+    s.ufos.push_back(u);
+
+    Powerup p; p.pos = {250.0f, 250.0f}; p.type = PowerupType::FanFire; p.radius = 16.0f;
+    s.powerups.push_back(p);
+
+    s.events.push_back({net::EventType::Explosion, {12.0f, 34.0f}, 3});
+    s.events.push_back({net::EventType::Shoot, {100.0f, 360.0f}, 0});
+
+    return s;
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -78,14 +134,15 @@ int main(int argc, char** argv)
 
         if (link.State() == net::LinkState::Connected)
         {
-            // Each side sends a distinct message type on its channel.
+            // Host streams full snapshots (the real Phase 1 payload); client
+            // streams its input. Both on the unreliable channel.
             net::ByteWriter w;
             if (isHost)
             {
-                net::StartGameMsg m;
-                m.seed = 0x1000u + static_cast<uint32_t>(tick);
-                m.write(w);
-                link.SendReliable(w.buf.data(), w.buf.size());
+                MakeSampleSnapshot(tick).write(w);
+                if (tick == 0 || sent == 0)
+                    std::printf("[tick %d] snapshot payload = %zu bytes\n", tick, w.buf.size());
+                link.SendUnreliable(w.buf.data(), w.buf.size());
             }
             else
             {
@@ -102,12 +159,25 @@ int main(int argc, char** argv)
             while (link.Receive(pkt))
             {
                 recv++;
-                if (recv <= 3)
+                net::ByteReader r(pkt.data.data(), pkt.data.size());
+                const auto type = static_cast<net::MsgType>(r.u8());
+
+                // Client decodes snapshots and confirms they arrived whole.
+                if (type == net::MsgType::Snapshot)
                 {
-                    net::ByteReader r(pkt.data.data(), pkt.data.size());
-                    const uint8_t type = r.u8();
+                    const net::Snapshot snap = net::Snapshot::read(r);
+                    if (recv <= 3)
+                    {
+                        std::printf("[tick %d] recv snapshot %zu bytes: %zu ast, %zu ships, ok=%d\n",
+                                    tick, pkt.data.size(), snap.asteroids.size(),
+                                    snap.ships.size(), r.ok ? 1 : 0);
+                        std::fflush(stdout);
+                    }
+                }
+                else if (recv <= 3)
+                {
                     std::printf("[tick %d] recv type=%u (%zu bytes)\n",
-                                tick, type, pkt.data.size());
+                                tick, static_cast<unsigned>(type), pkt.data.size());
                     std::fflush(stdout);
                 }
             }

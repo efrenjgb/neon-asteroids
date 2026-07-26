@@ -122,9 +122,12 @@ void NetLink::SendReliable(const uint8_t* data, size_t n)
 void NetLink::SendUnreliable(const uint8_t* data, size_t n)
 {
     if (peer_ == nullptr) return;
-    // Flag 0 = unreliable but sequenced: stale/out-of-order packets are dropped,
-    // which is exactly what per-tick input and snapshots want.
-    ENetPacket* pkt = enet_packet_create(data, n, 0);
+    // UNRELIABLE_FRAGMENT keeps the packet unreliable (stale ones are dropped,
+    // which is what per-tick input and snapshots want) while still allowing it
+    // to fragment when it exceeds the MTU — a busy wave's snapshot can run past
+    // ~1400 bytes because every asteroid carries its polygon shape. A plain
+    // unreliable packet over MTU would be silently dropped.
+    ENetPacket* pkt = enet_packet_create(data, n, ENET_PACKET_FLAG_UNRELIABLE_FRAGMENT);
     enet_peer_send(static_cast<ENetPeer*>(peer_), /*channel*/ 1, pkt);
 }
 
