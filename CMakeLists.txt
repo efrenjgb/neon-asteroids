@@ -51,9 +51,11 @@ add_executable(neon_asteroids
     src/entities.cpp
     src/postfx.cpp
     src/audio.cpp
+    src/net.cpp
 )
 
-target_link_libraries(neon_asteroids PRIVATE raylib)
+target_link_libraries(neon_asteroids PRIVATE raylib enet)
+target_include_directories(neon_asteroids PRIVATE ${enet_SOURCE_DIR}/include)
 
 # Shaders are read from the source tree so edits take effect on the next run
 # without a rebuild or a copy step.

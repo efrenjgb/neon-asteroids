@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace net
@@ -14,6 +15,10 @@ namespace net
 // ENet needs one global init/shutdown per process.
 bool GlobalInit();
 void GlobalShutdown();
+
+// Best-guess LAN IPv4 address of this machine, for a host to share with the
+// other player. Empty string if it can't be determined. Call after GlobalInit.
+std::string LocalIP();
 
 enum class Role      { None, Host, Client };
 enum class LinkState { Disconnected, Connecting, Connected };

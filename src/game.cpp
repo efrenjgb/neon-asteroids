@@ -174,6 +174,11 @@ void Game::EnterMenu()
     state_ = State::Menu;
     shake_ = 0.0f;
 
+    // The menu is always local; returning here from an online match resets the
+    // role so the next choice starts clean.
+    role_       = NetRole::Local;
+    connecting_ = false;
+
     ships_.clear();
     bullets_.clear();
     particles_.clear();
@@ -277,10 +282,13 @@ void Game::StartWave(int wave)
         asteroids_.push_back(MakeAsteroid(safeSpawn(), 2, speedScale));
 
     audio_.PlayWaveStart();
+    RecordEvent(net::EventType::WaveStart, {0.0f, 0.0f}, 0);
 }
 
 void Game::UpdateMenu()
 {
+    if (menuMessageTimer_ > 0.0f) menuMessageTimer_ -= GetFrameTime();
+
     int nav = 0;
 
     if (IsKeyPressed(KEY_UP)   || IsKeyPressed(KEY_W)) nav = -1;
@@ -313,33 +321,89 @@ void Game::UpdateMenu()
                || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_RIGHT);
     }
 
+    constexpr int kMenuItems = 4;   // 1P, 2P local, host, join
     if (nav != 0)
     {
-        menuSelection_ = (menuSelection_ + nav + kMaxPlayers) % kMaxPlayers;
+        menuSelection_ = (menuSelection_ + nav + kMenuItems) % kMenuItems;
         audio_.PlayWaveStart();
     }
 
     if (confirm)
     {
-        playerCount_ = menuSelection_ + 1;
         playerPad_[0] = -1;
         playerPad_[1] = -1;
 
-        if (playerCount_ == 1)
+        switch (menuSelection_)
         {
-            // One player: bind the first controller present, else keyboard.
-            for (int s = 0; s < 4; s++)
-            {
-                if (IsGamepadAvailable(s)) { playerPad_[0] = s; break; }
-            }
-            ResetRun(playerCount_);
+            case 0:   // one player
+                playerCount_ = 1;
+                for (int s = 0; s < 4; s++)
+                    if (IsGamepadAvailable(s)) { playerPad_[0] = s; break; }
+                ResetRun(1);
+                break;
+
+            case 1:   // two players, local — each claims a controller
+                playerCount_ = 2;
+                claimIndex_  = 0;
+                state_       = State::Claiming;
+                break;
+
+            case 2:   // host online — main opens the socket, we wait for a peer
+                netRequest_ = NetRequest::Host;
+                state_      = State::HostWait;
+                break;
+
+            case 3:   // join online — type the host's IP
+                joinIp_.clear();
+                connecting_ = false;
+                state_      = State::JoinEntry;
+                break;
         }
-        else
+    }
+}
+
+void Game::UpdateHostWait()
+{
+    // The peer connecting is handled by main (it calls BeginOnline, which flips
+    // us to Playing). Here we only offer a way out.
+    if (IsKeyPressed(KEY_BACKSPACE))
+    {
+        netRequest_ = NetRequest::Cancel;
+        EnterMenu();
+    }
+}
+
+void Game::UpdateJoinEntry()
+{
+    if (connecting_)
+    {
+        // Waiting for the host's StartGame; main handles the transition.
+        if (IsKeyPressed(KEY_BACKSPACE))
         {
-            // Two players: each claims their own controller.
-            claimIndex_ = 0;
-            state_      = State::Claiming;
+            netRequest_ = NetRequest::Cancel;
+            connecting_ = false;
+            EnterMenu();
         }
+        return;
+    }
+
+    // Type an IP: digits and dots only.
+    for (int c = GetCharPressed(); c > 0; c = GetCharPressed())
+    {
+        if (((c >= '0' && c <= '9') || c == '.') && joinIp_.size() < 21)
+            joinIp_.push_back(static_cast<char>(c));
+    }
+
+    if (IsKeyPressed(KEY_BACKSPACE))
+    {
+        if (!joinIp_.empty()) joinIp_.pop_back();
+        else                  EnterMenu();   // backspace on empty field cancels
+    }
+
+    if ((IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) && !joinIp_.empty())
+    {
+        netRequest_ = NetRequest::Join;
+        connecting_ = true;
     }
 }
 
@@ -458,6 +522,14 @@ void Game::Update(float dt, const ShipControls* controls)
     time_ += dt;
     shake_ = std::max(0.0f, shake_ - dt * 2.6f);
 
+    // Cosmetic events are collected per tick and drained by the host after each
+    // Update; clear last tick's here so RecordEvent starts fresh.
+    if (role_ == NetRole::Host)
+    {
+        events_.clear();
+        netTick_++;
+    }
+
     UpdateStars(dt);
     UpdateParticles(dt);
 
@@ -477,15 +549,40 @@ void Game::Update(float dt, const ShipControls* controls)
         return;
     }
 
+    if (state_ == State::HostWait)
+    {
+        UpdateHostWait();
+        UpdateAsteroids(dt);
+        audio_.SetThrust(false);
+        return;
+    }
+
+    if (state_ == State::JoinEntry)
+    {
+        UpdateJoinEntry();
+        UpdateAsteroids(dt);
+        audio_.SetThrust(false);
+        return;
+    }
+
     if (state_ == State::GameOver)
     {
         const bool restart = IsKeyPressed(KEY_R)
                           || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_RIGHT);
-        const bool toMenu  = IsKeyPressed(KEY_M)
-                          || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT);
 
-        if (restart)     ResetRun(playerCount_);
-        else if (toMenu) EnterMenu();
+        // Online: only the host may restart, and leaving to the menu is handled
+        // by main (so the session tears down and the peer is notified). Local
+        // play keeps its own restart/menu handling here.
+        if (restart && role_ != NetRole::Client)
+        {
+            ResetRun(playerCount_);
+        }
+        else if (role_ == NetRole::Local)
+        {
+            const bool toMenu = IsKeyPressed(KEY_M)
+                             || IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT);
+            if (toMenu) EnterMenu();
+        }
 
         UpdateAsteroids(dt);
         audio_.SetThrust(false);
@@ -637,6 +734,7 @@ void Game::EnterHyperspace(Ship& ship)
     SpawnRing(portal, ShipColor(ship.player), 26, 170.0f, /*inward=*/true);
     shake_ = std::min(1.0f, shake_ + 0.18f);
     audio_.PlayHyperspace(false);
+    RecordEvent(net::EventType::HyperEnter, portal, static_cast<uint8_t>(ship.player));
     Rumble(0.25f, 0.4f, 0.12f);
 }
 
@@ -650,6 +748,7 @@ void Game::EmergeFromHyperspace(Ship& ship)
 
     SpawnRing(ship.pos, ShipColor(ship.player), 30, 300.0f, /*inward=*/false);
     audio_.PlayHyperspace(true);
+    RecordEvent(net::EventType::HyperExit, ship.pos, static_cast<uint8_t>(ship.player));
 }
 
 void Game::Fire(Ship& ship)
@@ -688,6 +787,8 @@ void Game::Fire(Ship& ship)
     shake_ = std::min(1.0f, shake_ + 0.06f);
     Rumble(0.0f, 0.18f, 0.05f);
     audio_.PlayShoot();
+    // Muzzle position is the last bullet's spawn point; fine for the flash.
+    RecordEvent(net::EventType::Shoot, ship.pos, static_cast<uint8_t>(ship.player));
 }
 
 const Ship* Game::NearestShip(Vector2 from) const
@@ -817,6 +918,7 @@ void Game::UfoFire(Ufo& u)
 
     SpawnBurst(u.pos, kUfoGreen, 3, 70.0f);
     audio_.PlayUfoShoot();
+    RecordEvent(net::EventType::UfoShoot, u.pos, 0);
 }
 
 void Game::DestroyUfo(size_t index)
@@ -828,6 +930,7 @@ void Game::DestroyUfo(size_t index)
     shake_ = std::min(1.0f, shake_ + 0.35f);
     Rumble(0.4f, 0.5f, 0.15f);
     audio_.PlayExplosion(2);
+    RecordEvent(net::EventType::UfoDeath, u.pos, static_cast<uint8_t>(u.tier));
 
     // Every downed saucer leaves a pickup.
     SpawnPowerup(u.pos);
@@ -866,6 +969,7 @@ void Game::ApplyPowerup(Ship& ship, PowerupType type)
 
     SpawnBurst(ship.pos, PowerupColor(type), 18, 160.0f);
     audio_.PlayPowerup();
+    RecordEvent(net::EventType::Powerup, ship.pos, static_cast<uint8_t>(type));
 }
 
 void Game::UpdatePowerups(float dt)
@@ -1051,6 +1155,7 @@ void Game::SplitAsteroid(size_t index)
     shake_ = std::min(1.0f, shake_ + 0.10f * static_cast<float>(hit.tier));
     Rumble(0.12f * static_cast<float>(hit.tier), 0.25f, 0.09f);
     audio_.PlayExplosion(hit.tier);
+    RecordEvent(net::EventType::Explosion, hit.pos, static_cast<uint8_t>(hit.tier));
 
     asteroids_.erase(asteroids_.begin() + static_cast<long>(index));
 
@@ -1080,6 +1185,7 @@ void Game::KillShip(Ship& ship)
         shake_ = std::min(1.0f, shake_ + 0.25f);
         Rumble(0.3f, 0.4f, 0.12f);
         audio_.PlayShieldBreak();
+        RecordEvent(net::EventType::ShieldBreak, ship.pos, 0);
         return;
     }
 
@@ -1093,6 +1199,7 @@ void Game::KillShip(Ship& ship)
     shake_ = 1.0f;
     Rumble(1.0f, 1.0f, 0.45f);
     audio_.PlayShipDeath();
+    RecordEvent(net::EventType::ShipDeath, ship.pos, static_cast<uint8_t>(ship.player));
 }
 
 void Game::SpawnThrustParticles(const Ship& ship, float dt)
@@ -1191,6 +1298,201 @@ Vector2 Game::ShakeOffset() const
     return {RandF(-mag, mag), RandF(-mag, mag)};
 }
 
+// --------------------------------------------------------------- networking ---
+
+void Game::NetReturnToMenu(const char* message)
+{
+    EnterMenu();   // resets role_ to Local
+    if (message != nullptr && message[0] != '\0')
+    {
+        menuMessage_      = message;
+        menuMessageTimer_ = 4.0f;
+    }
+}
+
+void Game::BeginOnline(NetRole role, int localPlayer, uint32_t seed)
+{
+    // The seed is reserved for future determinism work; the client renders the
+    // host's snapshots, so it is not needed for correctness yet.
+    (void)seed;
+
+    role_        = role;
+    localPlayer_ = localPlayer;
+    playerCount_ = 2;
+    connecting_  = false;
+
+    // The local human drives one ship with the player-0 bindings; bind their
+    // first controller if present, else keyboard. The remote ship is never read
+    // locally.
+    playerPad_[0] = -1;
+    for (int s = 0; s < 4; s++)
+        if (IsGamepadAvailable(s)) { playerPad_[0] = s; break; }
+    playerPad_[1] = -1;
+
+    if (role == NetRole::Host)
+    {
+        ResetRun(2);          // authoritative world; ResetRun leaves role_ alone
+        role_ = NetRole::Host;
+    }
+    else
+    {
+        // Client: everything arrives via snapshots. Start Playing but empty.
+        state_ = State::Playing;
+        shake_ = 0.0f;
+        ships_.clear();
+        asteroids_.clear();
+        bullets_.clear();
+        ufos_.clear();
+        powerups_.clear();
+    }
+}
+
+void Game::RecordEvent(net::EventType type, Vector2 pos, uint8_t param)
+{
+    // Only the host produces the event stream; Local and Client ignore it.
+    if (role_ != NetRole::Host) return;
+    events_.push_back({type, pos, param});
+}
+
+void Game::SerializeSnapshot(net::ByteWriter& w)
+{
+    net::Snapshot snap;
+    snap.tick      = netTick_;
+    snap.gameState = (state_ == State::GameOver) ? 1 : 0;
+    snap.wave      = static_cast<uint16_t>(wave_);
+    snap.shake     = shake_;
+
+    // Entity counts are small, so copying into the snapshot is cheap and keeps
+    // the wire format in one place (net_serialize.hpp).
+    snap.ships     = ships_;
+    snap.asteroids = asteroids_;
+    snap.bullets   = bullets_;
+    snap.ufos      = ufos_;
+    snap.powerups  = powerups_;
+    snap.events    = events_;
+
+    snap.write(w);
+}
+
+void Game::ApplySnapshot(const net::Snapshot& snap)
+{
+    // Full-state replacement — the client owns none of the simulation, so it
+    // simply mirrors the host's authoritative view. Local cosmetics (particles,
+    // starfield) are deliberately left untouched.
+    wave_  = snap.wave;
+    shake_ = snap.shake;
+    state_ = (snap.gameState == 1) ? State::GameOver : State::Playing;
+
+    ships_     = snap.ships;
+    asteroids_ = snap.asteroids;
+    bullets_   = snap.bullets;
+    ufos_      = snap.ufos;
+    powerups_  = snap.powerups;
+
+    for (const net::NetEvent& e : snap.events) ReplayEvent(e);
+}
+
+void Game::UpdateClientView(float dt)
+{
+    // The client renders the host's snapshots but must animate the cosmetic
+    // layers itself, since it never runs the simulation that would normally
+    // drive them.
+    time_ += dt;
+
+    UpdateStars(dt);       // parallax follows the snapshot ships' velocities
+    UpdateParticles(dt);   // age/move/retire particles spawned by ReplayEvent
+
+    // Thrust plume + engine loop for any ship the snapshot marks as thrusting.
+    bool anyThrust = false;
+    for (const Ship& s : ships_)
+    {
+        if (ShipVisible(s) && s.thrusting)
+        {
+            SpawnThrustParticles(s, dt);
+            anyThrust = true;
+        }
+    }
+    audio_.SetThrust(anyThrust);
+
+    // The host emits the UFO warble on a timer inside its sim; reproduce it
+    // locally while a saucer is on screen.
+    if (!ufos_.empty())
+    {
+        clientWarbleTimer_ -= dt;
+        if (clientWarbleTimer_ <= 0.0f)
+        {
+            audio_.PlayUfoWarble(ufos_.front().tier == 1);
+            clientWarbleTimer_ = 0.55f;
+        }
+    }
+    else
+    {
+        clientWarbleTimer_ = 0.0f;
+    }
+}
+
+void Game::ReplayEvent(const net::NetEvent& e)
+{
+    // Reconstruct the audio and particle burst the host produced at this moment.
+    // Screen shake is not re-added here — it arrives as an absolute value in the
+    // snapshot. Particle RNG is local and cosmetic, so it need not match.
+    const int p = static_cast<int>(e.param);
+
+    switch (e.type)
+    {
+        case net::EventType::Shoot:
+            SpawnBurst(e.pos, BulletColor(p), 4, 90.0f);
+            audio_.PlayShoot();
+            break;
+
+        case net::EventType::Explosion:
+            SpawnBurst(e.pos, AsteroidColor(p), 14 + p * 6, 60.0f + p * 40.0f);
+            audio_.PlayExplosion(p);
+            break;
+
+        case net::EventType::ShipDeath:
+            SpawnBurst(e.pos, ShipColor(p), 40, 260.0f);
+            SpawnBurst(e.pos, WHITE, 18, 150.0f);
+            audio_.PlayShipDeath();
+            break;
+
+        case net::EventType::ShieldBreak:
+            SpawnBurst(e.pos, PowerupColor(PowerupType::Shield), 26, 220.0f);
+            audio_.PlayShieldBreak();
+            break;
+
+        case net::EventType::HyperEnter:
+            SpawnRing(e.pos, ShipColor(p), 26, 170.0f, /*inward=*/true);
+            audio_.PlayHyperspace(false);
+            break;
+
+        case net::EventType::HyperExit:
+            SpawnRing(e.pos, ShipColor(p), 30, 300.0f, /*inward=*/false);
+            audio_.PlayHyperspace(true);
+            break;
+
+        case net::EventType::UfoShoot:
+            SpawnBurst(e.pos, kUfoGreen, 3, 70.0f);
+            audio_.PlayUfoShoot();
+            break;
+
+        case net::EventType::UfoDeath:
+            SpawnBurst(e.pos, kUfoGreen, 30, 240.0f);
+            SpawnBurst(e.pos, WHITE, 12, 140.0f);
+            audio_.PlayExplosion(2);
+            break;
+
+        case net::EventType::Powerup:
+            SpawnBurst(e.pos, PowerupColor(static_cast<PowerupType>(e.param)), 18, 160.0f);
+            audio_.PlayPowerup();
+            break;
+
+        case net::EventType::WaveStart:
+            audio_.PlayWaveStart();
+            break;
+    }
+}
+
 void Game::Draw() const
 {
     ClearBackground(kSpaceBg);
@@ -1215,9 +1517,11 @@ void Game::Draw() const
 
     EndBlendMode();
 
-    if (state_ == State::Menu)          DrawMenu();
-    else if (state_ == State::Claiming) DrawClaim();
-    else                                DrawHud();
+    if (state_ == State::Menu)           DrawMenu();
+    else if (state_ == State::Claiming)  DrawClaim();
+    else if (state_ == State::HostWait)  DrawHostWait();
+    else if (state_ == State::JoinEntry) DrawJoinEntry();
+    else                                 DrawHud();
 }
 
 void Game::DrawClaim() const
@@ -1278,24 +1582,23 @@ void Game::DrawMenu() const
     const int   tw    = MeasureText(title, 72);
     DrawText(title, (kScreenW - tw) / 2, 130, 72, ShipColor(0));
 
-    const char* options[kMaxPlayers] = {"1  PLAYER", "2  PLAYERS"};
+    constexpr int kMenuItems = 4;
+    const char*   options[kMenuItems] = {"1  PLAYER", "2  PLAYERS", "HOST  ONLINE", "JOIN  ONLINE"};
 
-    for (int i = 0; i < kMaxPlayers; i++)
+    for (int i = 0; i < kMenuItems; i++)
     {
         const bool  selected = (i == menuSelection_);
-        const int   size     = selected ? 36 : 30;
+        const int   size     = selected ? 34 : 28;
         const int   w        = MeasureText(options[i], size);
-        const int   y        = 300 + i * 60;
+        const int   y        = 270 + i * 56;
 
-        // Colour each option as the player it represents, so two-player mode
-        // previews the second ship's amber.
+        // Amber for the second-player / online items, cyan for the rest.
         const Color tint = (i == 1) ? ShipColor(1) : ShipColor(0);
         DrawText(options[i], (kScreenW - w) / 2, y, size,
                  selected ? tint : Fade(tint, 0.35f));
 
         if (selected)
         {
-            // Chevron that breathes, so the selection is unmistakable.
             const float pulse = 6.0f * std::sin(time_ * 5.0f);
             DrawText(">", (kScreenW - w) / 2 - 40 + static_cast<int>(pulse), y, size, tint);
         }
@@ -1303,7 +1606,16 @@ void Game::DrawMenu() const
 
     const char* hint = "UP / DOWN  TO  CHOOSE      ENTER  OR  A  TO  START";
     const int   hw   = MeasureText(hint, 18);
-    DrawText(hint, (kScreenW - hw) / 2, 470, 18, Fade(ShipColor(0), 0.55f));
+    DrawText(hint, (kScreenW - hw) / 2, 512, 18, Fade(ShipColor(0), 0.55f));
+
+    // Transient status from the last online attempt (fades out).
+    if (menuMessageTimer_ > 0.0f)
+    {
+        const int   mw    = MeasureText(menuMessage_.c_str(), 22);
+        const float alpha = std::min(menuMessageTimer_, 1.0f);
+        DrawText(menuMessage_.c_str(), (kScreenW - mw) / 2, 210, 22,
+                 Fade(Color{255, 120, 120, 255}, alpha));
+    }
 
     // Player 1 only keeps the arrows when playing alone, so say so accurately.
     const char* p1 = (menuSelection_ == 0)
@@ -1318,6 +1630,67 @@ void Game::DrawMenu() const
         const int   p2w = MeasureText(p2, 15);
         DrawText(p2, (kScreenW - p2w) / 2, 564, 15, Fade(ShipColor(1), 0.40f));
     }
+}
+
+void Game::DrawHostWait() const
+{
+    const char* title = "HOSTING";
+    const int   tw    = MeasureText(title, 56);
+    DrawText(title, (kScreenW - tw) / 2, 180, 56, ShipColor(0));
+
+    const char* line1 = "WAITING FOR A PLAYER TO JOIN";
+    const int   w1    = MeasureText(line1, 28);
+    // Gentle pulse so it reads as "live / waiting" rather than frozen.
+    const float pulse = 0.55f + 0.45f * std::sin(time_ * 3.0f);
+    DrawText(line1, (kScreenW - w1) / 2, 300, 28, Fade(ShipColor(0), pulse));
+
+    char addr[80];
+    if (!hostIp_.empty())
+        std::snprintf(addr, sizeof(addr), "on this computer:   %s   port %u", hostIp_.c_str(), hostPort_);
+    else
+        std::snprintf(addr, sizeof(addr), "port %u  -  enter this computer's IP on the other device", hostPort_);
+    const int w2 = MeasureText(addr, 20);
+    DrawText(addr, (kScreenW - w2) / 2, 350, 20, Fade(ShipColor(0), 0.6f));
+
+    const char* hint = "BACKSPACE  TO  CANCEL";
+    const int   hw   = MeasureText(hint, 18);
+    DrawText(hint, (kScreenW - hw) / 2, kScreenH - 80, 18, Fade(ShipColor(0), 0.45f));
+}
+
+void Game::DrawJoinEntry() const
+{
+    if (connecting_)
+    {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "CONNECTING TO %s", joinIp_.c_str());
+        const int   w     = MeasureText(buf, 30);
+        const float pulse = 0.5f + 0.5f * std::sin(time_ * 4.0f);
+        DrawText(buf, (kScreenW - w) / 2, 320, 30, Fade(ShipColor(1), pulse));
+
+        const char* hint = "BACKSPACE  TO  CANCEL";
+        const int   hw   = MeasureText(hint, 18);
+        DrawText(hint, (kScreenW - hw) / 2, kScreenH - 80, 18, Fade(ShipColor(1), 0.45f));
+        return;
+    }
+
+    const char* title = "JOIN  ONLINE";
+    const int   tw    = MeasureText(title, 48);
+    DrawText(title, (kScreenW - tw) / 2, 180, 48, ShipColor(1));
+
+    const char* prompt = "ENTER HOST IP ADDRESS";
+    const int   pw     = MeasureText(prompt, 22);
+    DrawText(prompt, (kScreenW - pw) / 2, 290, 22, Fade(ShipColor(1), 0.6f));
+
+    // The field, with a blinking caret.
+    const bool  caret = std::fmod(time_, 1.0f) < 0.5f;
+    char        field[40];
+    std::snprintf(field, sizeof(field), "%s%s", joinIp_.c_str(), caret ? "_" : " ");
+    const int   fw = MeasureText(field, 40);
+    DrawText(field, (kScreenW - fw) / 2, 340, 40, ShipColor(1));
+
+    const char* hint = "TYPE IP  -  ENTER TO CONNECT  -  BACKSPACE TO EDIT/CANCEL";
+    const int   hw   = MeasureText(hint, 16);
+    DrawText(hint, (kScreenW - hw) / 2, kScreenH - 80, 16, Fade(ShipColor(1), 0.45f));
 }
 
 void Game::DrawHud() const
@@ -1385,8 +1758,14 @@ void Game::DrawHud() const
         const int cw = MeasureText(buf, 28);
         DrawText(buf, (kScreenW - cw) / 2, kScreenH / 2 - 4, 28, Fade(ShipColor(0), 0.85f));
 
-        const char* hint = "R  OR  START  TO  PLAY  AGAIN      M  OR  B  FOR  MENU";
-        const int   hw   = MeasureText(hint, 20);
+        const char* hint;
+        switch (role_)
+        {
+            case NetRole::Host:   hint = "R  OR  START  TO  RESTART      M  TO  LEAVE"; break;
+            case NetRole::Client: hint = "WAITING FOR HOST TO RESTART      M  TO  LEAVE"; break;
+            default:              hint = "R  OR  START  TO  PLAY  AGAIN      M  OR  B  FOR  MENU"; break;
+        }
+        const int hw = MeasureText(hint, 20);
         DrawText(hint, (kScreenW - hw) / 2, kScreenH / 2 + 46, 20, Fade(ShipColor(0), 0.6f));
     }
 }
