@@ -57,12 +57,6 @@ add_executable(neon_asteroids
 target_link_libraries(neon_asteroids PRIVATE raylib enet)
 target_include_directories(neon_asteroids PRIVATE ${enet_SOURCE_DIR}/include)
 
-# Shaders are read from the source tree so edits take effect on the next run
-# without a rebuild or a copy step.
-target_compile_definitions(neon_asteroids PRIVATE
-    SHADERS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders"
-)
-
 # Diagnostic tool, not part of the game. Talks to GLFW directly as well as
 # through raylib, to tell a missing controller mapping apart from the OS not
 # delivering input at all.
@@ -91,8 +85,6 @@ if(APPLE)
     )
 endif()
 
-# Packaging: `cmake --install build --prefix <dir>` stages the game and its
-# shaders together, so the shipped binary finds shaders/ next to itself. The
-# probe is a dev tool and is deliberately not installed.
+# Packaging: the binary is self-contained (shader baked in), so only the
+# executable is installed. The probe is a dev tool and is not installed.
 install(TARGETS neon_asteroids RUNTIME DESTINATION .)
-install(DIRECTORY shaders DESTINATION .)

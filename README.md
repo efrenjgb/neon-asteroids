@@ -21,7 +21,7 @@ Grab a build from the [Releases](../../releases) page:
   if it complains about missing libraries, install your distro's equivalents of
   `libasound2`, `libx11`, `libgl1`.
 
-Keep the `shaders/` folder next to the executable.
+The binary is self-contained — no separate files to keep beside it.
 
 ## Controls
 
@@ -57,8 +57,8 @@ cmake --build build -j
 ./build/neon_asteroids          # Windows: build\Release\neon_asteroids.exe
 ```
 
-Shaders load from a `shaders/` folder next to the executable, falling back to
-the source tree for dev builds, so running straight from `build/` just works.
+The post-processing shader is baked into the binary (`src/postfx.cpp`), kept in
+sync with `shaders/resolve.fs` — the source-of-truth copy for editing.
 
 ## Controllers
 

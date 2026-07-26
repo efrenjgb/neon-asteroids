@@ -1,23 +1,35 @@
 #include "postfx.hpp"
 
 #include <algorithm>
-#include <string>
 
 namespace
 {
 // Draw the scene at 2x and let the downsample do the antialiasing.
 constexpr int kSupersample = 2;
 
-std::string ShaderPath(const char* name)
-{
-    // Distributed builds ship a shaders/ folder beside the executable; prefer
-    // that so a copied-elsewhere binary still finds them. Fall back to the
-    // source tree for running straight out of a dev build.
-    const std::string beside = std::string(GetApplicationDirectory()) + "shaders/" + name;
-    if (FileExists(beside.c_str())) return beside;
+// The resolve shader is baked into the binary rather than read from a file, so
+// the executable is self-contained — no shaders/ folder to ship or keep beside
+// it. Kept in sync with shaders/resolve.fs (the source-of-truth copy for
+// editing).
+constexpr const char* kResolveFragmentShader = R"SHADER(#version 330
 
-    return std::string(SHADERS_DIR) + "/" + name;
+in vec2 fragTexCoord;
+out vec4 finalColor;
+
+uniform sampler2D texture0;
+uniform float vignetteAmount;
+
+void main()
+{
+    vec3 c = texture(texture0, fragTexCoord).rgb;
+
+    // Subtle corner falloff. Set vignetteAmount to 0 for a completely flat image.
+    vec2 uv = fragTexCoord - 0.5;
+    c *= 1.0 - dot(uv, uv) * vignetteAmount;
+
+    finalColor = vec4(c, 1.0);
 }
+)SHADER";
 }  // namespace
 
 bool PostFX::Load(int width, int height)
@@ -28,7 +40,7 @@ bool PostFX::Load(int width, int height)
     scene_ = LoadRenderTexture(width_ * kSupersample, height_ * kSupersample);
     SetTextureFilter(scene_.texture, TEXTURE_FILTER_BILINEAR);
 
-    resolveShader_ = LoadShader(nullptr, ShaderPath("resolve.fs").c_str());
+    resolveShader_ = LoadShaderFromMemory(nullptr, kResolveFragmentShader);
     locVignette_   = GetShaderLocation(resolveShader_, "vignetteAmount");
 
     loaded_ = IsShaderValid(resolveShader_);

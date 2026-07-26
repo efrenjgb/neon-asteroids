@@ -47,7 +47,6 @@ jobs:
         run: |
           mkdir -p pkg/neon-asteroids
           cp build/neon_asteroids pkg/neon-asteroids/
-          cp -R shaders pkg/neon-asteroids/
           cd pkg && zip -r ../neon-asteroids-macos.zip neon-asteroids
 
       - name: Package (Windows)
@@ -56,7 +55,6 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path pkg/neon-asteroids | Out-Null
           Copy-Item build/Release/neon_asteroids.exe pkg/neon-asteroids/
-          Copy-Item -Recurse shaders pkg/neon-asteroids/
           Compress-Archive -Path pkg/neon-asteroids -DestinationPath neon-asteroids-windows.zip
 
       - name: Package (Linux)
@@ -64,7 +62,6 @@ jobs:
         run: |
           mkdir -p pkg/neon-asteroids
           cp build/neon_asteroids pkg/neon-asteroids/
-          cp -R shaders pkg/neon-asteroids/
           cd pkg && zip -r ../neon-asteroids-linux.zip neon-asteroids
 
       - uses: actions/upload-artifact@v4
