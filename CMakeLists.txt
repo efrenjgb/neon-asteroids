@@ -37,6 +37,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(enet)
 
+if(WIN32)
+    # ENet compiles on Windows but its CMake does not export the Winsock/winmm
+    # link dependencies to consumers of the static lib, so linking any target
+    # against `enet` fails with unresolved accept/bind/htons/etc. Attaching them
+    # to ENet's interface makes every consumer inherit them.
+    target_link_libraries(enet INTERFACE ws2_32 winmm)
+endif()
+
 add_executable(neon_asteroids
     src/main.cpp
     src/game.cpp
