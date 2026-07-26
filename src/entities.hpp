@@ -93,6 +93,18 @@ struct Ship
 // the animation the player sees.
 inline bool ShipVisible(const Ship& s) { return s.alive && !s.warping; }
 
+// Per-frame intent for one ship, decoupled from where it came from: local
+// input, a networked peer, or an AI all just produce one of these. Lives here
+// rather than in game.hpp so the network serializer can use it without pulling
+// in the whole Game.
+struct ShipControls
+{
+    float turn       = 0.0f;   // -1 left .. +1 right
+    bool  thrust     = false;
+    bool  fire       = false;
+    bool  hyperspace = false;  // edge-triggered by the caller
+};
+
 struct Asteroid
 {
     Vector2 pos{};

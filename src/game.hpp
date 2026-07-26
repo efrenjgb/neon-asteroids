@@ -5,23 +5,21 @@
 
 #include <vector>
 
-// Per-frame intent for one ship, decoupled from where it came from. Reading a
-// second player, or an AI, means producing one of these — nothing downstream
-// needs to know the difference.
-struct ShipControls
-{
-    float turn       = 0.0f;   // -1 left .. +1 right
-    bool  thrust     = false;
-    bool  fire       = false;
-    bool  hyperspace = false;  // edge-triggered by the caller
-};
-
 class Game
 {
 public:
     void Init();
     void Shutdown();
-    void Update(float dt);
+
+    // The simulation advances in fixed steps while playing; menus and the
+    // game-over screen run once per frame. main.cpp drives that split, which is
+    // also the seam the authoritative-host netcode will plug into: the host
+    // ticks the sim, the client will apply snapshots instead.
+    //   controls: one entry per player for a Playing tick; nullptr otherwise.
+    void Update(float dt, const ShipControls* controls);
+
+    bool         IsPlaying() const { return state_ == State::Playing; }
+    ShipControls SampleControls(int player) const { return ReadControls(player); }
 
     // Draws the world and HUD. Call inside PostFX::BeginScene/EndScene.
     void Draw() const;

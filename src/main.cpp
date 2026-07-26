@@ -5,6 +5,8 @@
 
 #include <raylib.h>
 
+#include <algorithm>
+
 namespace
 {
 // Borderless rather than true fullscreen, deliberately.
@@ -48,9 +50,19 @@ int main()
     Game game;
     game.Init();
 
+    // The simulation runs on a fixed 60 Hz step, decoupled from render rate.
+    // This gives the sim a stable cadence — the foundation the networked host
+    // will tick against — and makes physics independent of framerate. Rendering
+    // still happens once per real frame. At the usual vsync-locked 60 fps this
+    // is exactly one tick per frame; the accumulator only matters when a frame
+    // runs long or short.
+    constexpr float kFixedDt   = 1.0f / 60.0f;
+    constexpr float kMaxCatchUp = 0.25f;   // cap to avoid a death spiral after a hitch
+    float accumulator = 0.0f;
+
     while (!WindowShouldClose())
     {
-        const float dt = GetFrameTime();
+        const float frameDt = GetFrameTime();
 
         if (IsKeyPressed(KEY_ESCAPE)) break;
 
@@ -63,7 +75,34 @@ int main()
 
         if (IsKeyPressed(KEY_F11) || altEnter || cmdF) ToggleFullscreenBorderless();
 
-        game.Update(dt);
+        if (game.IsPlaying())
+        {
+            accumulator = std::min(accumulator + frameDt, kMaxCatchUp);
+
+            // Sample this frame's intent once, then feed it to every tick. Edge
+            // actions (hyperspace) are cleared after the first tick so a
+            // multi-tick frame can't fire them twice.
+            ShipControls controls[kMaxPlayers];
+            for (int p = 0; p < kMaxPlayers; p++) controls[p] = game.SampleControls(p);
+
+            while (accumulator >= kFixedDt)
+            {
+                game.Update(kFixedDt, controls);
+                for (int p = 0; p < kMaxPlayers; p++) controls[p].hyperspace = false;
+                accumulator -= kFixedDt;
+
+                // A tick may end the run (all players dead); stop stepping the
+                // moment we leave Playing so game-over input isn't run here.
+                if (!game.IsPlaying()) { accumulator = 0.0f; break; }
+            }
+        }
+        else
+        {
+            // Menus, the claim step and game-over are UI: run once per real
+            // frame, reading their own input. No fixed stepping needed.
+            game.Update(frameDt, nullptr);
+            accumulator = 0.0f;
+        }
 
         fx.BeginScene();
             game.Draw();

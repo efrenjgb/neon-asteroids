@@ -51,6 +51,11 @@ target_include_directories(gamepad_probe PRIVATE
     ${raylib_SOURCE_DIR}/src/external/glfw/include
 )
 
+# Headless unit test for the network serialization. Links raylib only for the
+# Vector2 struct definition; opens no window and runs in CI.
+add_executable(net_selftest tools/net_selftest.cpp)
+target_link_libraries(net_selftest PRIVATE raylib)
+
 if(APPLE)
     target_link_libraries(neon_asteroids PRIVATE
         "-framework IOKit"

@@ -453,7 +453,7 @@ ShipControls Game::ReadControls(int player) const
     return in;
 }
 
-void Game::Update(float dt)
+void Game::Update(float dt, const ShipControls* controls)
 {
     time_ += dt;
     shake_ = std::max(0.0f, shake_ - dt * 2.6f);
@@ -498,7 +498,10 @@ void Game::Update(float dt)
     {
         if (ship.alive)
         {
-            const ShipControls in = ReadControls(ship.player);
+            // Input is sampled once per frame by the caller and passed in, so a
+            // frame that ticks the sim more than once does not re-read (and
+            // re-fire edge actions like hyperspace) each tick.
+            const ShipControls in = controls[ship.player];
             UpdateShip(ship, in, dt);
             anyThrusting = anyThrusting || (ship.thrusting && !ship.warping);
         }
