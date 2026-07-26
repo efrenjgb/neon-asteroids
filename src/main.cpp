@@ -198,8 +198,12 @@ int main(int argc, char** argv)
     SetGamepadMappings(kExtraGamepadMappings);
 
     InitAudioDevice();
-    SetTargetFPS(60);
     SetExitKey(KEY_NULL);   // Esc is handled below, not a hard quit
+    // No SetTargetFPS: vsync (FLAG_VSYNC_HINT) paces the frames on its own.
+    // Adding a software 60 fps cap on top fights vsync — on a 120 Hz display the
+    // two beat against each other and frames land on the wrong refresh boundary,
+    // which reads as stutter even though nothing is dropping frames. The fixed
+    // 60 Hz simulation step (kFixedDt) is independent of the render rate.
 
     PostFX fx;
     fx.Load(kScreenW, kScreenH);
@@ -219,6 +223,12 @@ int main(int argc, char** argv)
     constexpr float kFixedDt   = 1.0f / 60.0f;
     constexpr float kMaxCatchUp = 0.25f;   // cap to avoid a death spiral after a hitch
     float accumulator = 0.0f;
+
+    // Hyperspace is edge-triggered (fires on the one frame it is pressed), but
+    // the render rate (vsync, e.g. 120 Hz) is higher than the 60 Hz sim, so some
+    // frames run no tick at all. A press sampled on such a frame would be lost.
+    // These latches hold each player's press until a tick actually consumes it.
+    bool hyperLatch[kMaxPlayers] = {};
 
     while (!WindowShouldClose())
     {
@@ -297,25 +307,36 @@ int main(int argc, char** argv)
         {
             accumulator = std::min(accumulator + frameDt, kMaxCatchUp);
 
-            // Sample this frame's intent once, then feed it to every tick. Edge
-            // actions (hyperspace) are cleared after the first tick so a
-            // multi-tick frame can't fire them twice.
+            // Sample this frame's intent once, then feed it to every tick.
             ShipControls controls[kMaxPlayers];
             if (role == NetRole::Host)
             {
                 controls[0] = game.SampleControls(0);   // local host player
                 controls[1] = session.remoteInput;      // client, over the wire
-                session.remoteInput.hyperspace = false;  // consume the edge once
+                session.remoteInput.hyperspace = false;  // captured into the latch below
             }
             else
             {
                 for (int p = 0; p < kMaxPlayers; p++) controls[p] = game.SampleControls(p);
             }
 
+            // Latch the hyperspace edge so a zero-tick frame doesn't drop it, and
+            // feed the latched value to the ticks.
+            for (int p = 0; p < kMaxPlayers; p++)
+            {
+                if (controls[p].hyperspace) hyperLatch[p] = true;
+                controls[p].hyperspace = hyperLatch[p];
+            }
+
             while (accumulator >= kFixedDt)
             {
                 game.Update(kFixedDt, controls);
-                for (int p = 0; p < kMaxPlayers; p++) controls[p].hyperspace = false;
+                // A press fires once: clear both the per-tick flag and the latch.
+                for (int p = 0; p < kMaxPlayers; p++)
+                {
+                    controls[p].hyperspace = false;
+                    hyperLatch[p]          = false;
+                }
                 accumulator -= kFixedDt;
 
                 // A tick may end the run (all players dead); stop stepping the
