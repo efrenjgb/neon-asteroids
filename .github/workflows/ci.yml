@@ -1,0 +1,49 @@
+name: ci
+
+# Build-verification on every push and PR across all three platforms. Unlike
+# release.yml this makes no artifacts and no Release — it just proves the whole
+# project (game + tools, including the ENet-linked net targets) compiles
+# everywhere and that the serialization self-test passes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,   name: macos   }
+          - { os: windows-latest, name: windows }
+          - { os: ubuntu-latest,  name: linux   }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libx11-dev libxrandr-dev libxi-dev \
+            libgl1-mesa-dev libglu1-mesa-dev libxcursor-dev libxinerama-dev \
+            libxext-dev libudev-dev libwayland-dev libxkbcommon-dev wayland-protocols
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      # Builds every target, including net_conntest — which links ENet, so a
+      # cross-platform ENet build failure fails this job.
+      - name: Build all targets
+        run: cmake --build build --config Release -j 4
+
+      - name: Run serialization self-test (Unix)
+        if: matrix.name != 'windows'
+        run: ./build/net_selftest
+
+      - name: Run serialization self-test (Windows)
+        if: matrix.name == 'windows'
+        run: build\Release\net_selftest.exe
